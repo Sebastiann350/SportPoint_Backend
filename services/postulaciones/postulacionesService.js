@@ -1,4 +1,3 @@
-
 const supabase = require('../../database/supabase');
 
 // =====================================================
@@ -7,7 +6,6 @@ const supabase = require('../../database/supabase');
 
 const crearPostulacion = async (postulacion) => {
 
-    // Buscar el aviso y su autor.
     const { data: aviso, error: errorAviso } = await supabase
         .from('avisos')
         .select('id, tipo, estado, autor_id')
@@ -22,12 +20,10 @@ const crearPostulacion = async (postulacion) => {
         throw new Error('El aviso no está abierto');
     }
 
-    // Evitar que el autor se postule a su propio aviso.
     if (aviso.autor_id === postulacion.usuarioId) {
         throw new Error('No podés postularte a tu propio aviso');
     }
 
-    // Verificar que no exista otra postulación del mismo usuario.
     const { data: postulacionExistente, error: errorExistente } = await supabase
         .from('postulaciones')
         .select('id, estado')
@@ -43,7 +39,6 @@ const crearPostulacion = async (postulacion) => {
         throw new Error('Ya existe una postulación para este aviso');
     }
 
-    // Registrar la postulación.
     const { data, error } = await supabase
         .from('postulaciones')
         .insert({
@@ -59,7 +54,6 @@ const crearPostulacion = async (postulacion) => {
         throw error;
     }
 
-    // Buscar el nombre del jugador que se postuló.
     const { data: perfil, error: errorPerfil } = await supabase
         .from('perfiles')
         .select('nombre')
@@ -70,7 +64,6 @@ const crearPostulacion = async (postulacion) => {
         throw errorPerfil;
     }
 
-    // Crear una notificación para el autor del aviso.
     const { error: errorNotificacion } = await supabase
         .from('notificaciones')
         .insert({
@@ -96,7 +89,6 @@ const crearPostulacion = async (postulacion) => {
 
 const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
 
-    // Buscar la postulación y el aviso relacionado.
     const { data: postulacion, error: errorPostulacion } = await supabase
         .from('postulaciones')
         .select(`
@@ -118,7 +110,6 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         throw errorPostulacion;
     }
 
-    // Solo el autor del aviso puede responder.
     if (postulacion.avisos.autor_id !== usuarioId) {
         throw new Error('Solo el autor del aviso puede responder la postulación');
     }
@@ -179,8 +170,49 @@ const obtenerPostulacionesUsuario = async (usuarioId) => {
     return data;
 };
 
+// =====================================================
+// 4. OBTENER POSTULACIONES RECIBIDAS
+// =====================================================
+
+const obtenerPostulacionesRecibidas = async (usuarioId) => {
+
+    const { data, error } = await supabase
+        .from('postulaciones')
+        .select(`
+            id,
+            aviso_id,
+            usuario_id,
+            equipo_id,
+            estado,
+            creado_en,
+            perfiles (
+                id,
+                nombre,
+                zona
+            ),
+            avisos!inner (
+                id,
+                tipo,
+                estado,
+                autor_id,
+                zona,
+                fecha,
+                hora
+            )
+        `)
+        .eq('avisos.autor_id', usuarioId)
+        .order('creado_en', { ascending: false });
+
+    if (error) {
+        throw error;
+    }
+
+    return data;
+};
+
 module.exports = {
     crearPostulacion,
     responderPostulacion,
-    obtenerPostulacionesUsuario
+    obtenerPostulacionesUsuario,
+    obtenerPostulacionesRecibidas
 };
