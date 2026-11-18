@@ -1,6 +1,8 @@
 
 const supabase = require('../../database/supabase');
 
+const CLUB_PADEL_NORTE = '11111111-1111-4111-8111-111111111111';
+
 // =====================================================
 // 1. CREAR POSTULACIÓN
 // =====================================================
@@ -80,7 +82,11 @@ const crearPostulacion = async (postulacion) => {
 
 const crearEquipoAutomatico = async (postulacion) => {
 
-    const autorId = postulacion.avisos.autor_id;
+    const aviso = Array.isArray(postulacion.avisos)
+        ? postulacion.avisos[0]
+        : postulacion.avisos;
+
+    const autorId = aviso.autor_id;
     const jugadorId = postulacion.usuario_id;
 
     const { data: perfiles, error: errorPerfiles } = await supabase
@@ -161,7 +167,68 @@ const crearEquipoAutomatico = async (postulacion) => {
 };
 
 // =====================================================
-// 3. RESPONDER POSTULACIÓN
+// 3. CREAR PARTIDO AUTOMÁTICAMENTE
+// =====================================================
+
+const crearPartidoAutomatico = async (postulacion) => {
+
+    const aviso = Array.isArray(postulacion.avisos)
+        ? postulacion.avisos[0]
+        : postulacion.avisos;
+
+    if (!aviso.equipo_id || !postulacion.equipo_id) {
+        throw new Error('No se encontraron los dos equipos del partido');
+    }
+
+    if (aviso.equipo_id === postulacion.equipo_id) {
+        throw new Error('Un equipo no puede enfrentarse a sí mismo');
+    }
+
+    const { data: existente, error: errorExistente } = await supabase
+        .from('partidos')
+        .select('id')
+        .eq('aviso_id', aviso.id)
+        .maybeSingle();
+
+    if (errorExistente) throw errorExistente;
+
+    if (existente) return existente;
+
+    const { data: partido, error } = await supabase
+        .from('partidos')
+        .insert({
+            equipo_local_id: aviso.equipo_id,
+            equipo_visitante_id: postulacion.equipo_id,
+            aviso_id: aviso.id,
+            fecha: aviso.fecha,
+            hora: aviso.hora,
+            estado: 'acordado',
+            club_id: CLUB_PADEL_NORTE
+        })
+        .select()
+        .single();
+
+    if (error) throw error;
+
+    return partido;
+};
+
+// =====================================================
+// 4. CERRAR AVISO
+// =====================================================
+
+const cerrarAviso = async (avisoId) => {
+
+    const { error } = await supabase
+        .from('avisos')
+        .update({ estado: 'cerrado' })
+        .eq('id', avisoId);
+
+    if (error) throw error;
+};
+
+// =====================================================
+// 5. RESPONDER POSTULACIÓN
 // =====================================================
 
 const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
@@ -176,8 +243,12 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
             estado,
             avisos (
                 id,
+                tipo,
                 autor_id,
-                estado
+                equipo_id,
+                estado,
+                fecha,
+                hora
             )
         `)
         .eq('id', postulacionId)
@@ -185,7 +256,11 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
 
     if (errorPostulacion) throw errorPostulacion;
 
-    if (postulacion.avisos.autor_id !== usuarioId) {
+    const aviso = Array.isArray(postulacion.avisos)
+        ? postulacion.avisos[0]
+        : postulacion.avisos;
+
+    if (!aviso || aviso.autor_id !== usuarioId) {
         throw new Error('Solo el autor del aviso puede responder la postulación');
     }
 
@@ -213,23 +288,28 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         postulacionActualizada = data;
     }
 
-    if (respuesta === 'aceptada' && !postulacion.equipo_id) {
+    if (respuesta === 'aceptada') {
 
-        await crearEquipoAutomatico(postulacion);
+        if (aviso.tipo === 'jugador') {
 
-        const { error: errorAviso } = await supabase
-            .from('avisos')
-            .update({ estado: 'cerrado' })
-            .eq('id', postulacion.aviso_id);
+            if (!postulacion.equipo_id) {
+                await crearEquipoAutomatico(postulacion);
+            }
 
-        if (errorAviso) throw errorAviso;
+            await cerrarAviso(aviso.id);
+
+        } else if (aviso.tipo === 'equipo') {
+
+            await crearPartidoAutomatico(postulacion);
+            await cerrarAviso(aviso.id);
+        }
     }
 
     return postulacionActualizada;
 };
 
 // =====================================================
-// 4. OBTENER POSTULACIONES DE UN USUARIO
+// 6. OBTENER POSTULACIONES DE UN USUARIO
 // =====================================================
 
 const obtenerPostulacionesUsuario = async (usuarioId) => {
@@ -259,7 +339,7 @@ const obtenerPostulacionesUsuario = async (usuarioId) => {
 };
 
 // =====================================================
-// 5. OBTENER POSTULACIONES RECIBIDAS
+// 7. OBTENER POSTULACIONES RECIBIDAS
 // =====================================================
 
 const obtenerPostulacionesRecibidas = async (usuarioId) => {
@@ -297,7 +377,7 @@ const obtenerPostulacionesRecibidas = async (usuarioId) => {
 };
 
 // =====================================================
-// 6. RECUPERAR EQUIPOS DE POSTULACIONES ACEPTADAS
+// 8. RECUPERAR EQUIPOS DE POSTULACIONES ACEPTADAS
 // =====================================================
 
 const sincronizarEquiposAceptados = async (usuarioId) => {
@@ -312,6 +392,7 @@ const sincronizarEquiposAceptados = async (usuarioId) => {
             estado,
             avisos!inner (
                 id,
+                tipo,
                 autor_id,
                 estado
             )
@@ -322,22 +403,61 @@ const sincronizarEquiposAceptados = async (usuarioId) => {
 
     for (const postulacion of postulaciones) {
 
+        const aviso = Array.isArray(postulacion.avisos)
+            ? postulacion.avisos[0]
+            : postulacion.avisos;
+
         const esParticipante =
             postulacion.usuario_id === usuarioId ||
-            postulacion.avisos.autor_id === usuarioId;
+            aviso.autor_id === usuarioId;
 
-        if (!esParticipante || postulacion.equipo_id) {
+        if (!esParticipante || postulacion.equipo_id || aviso.tipo !== 'jugador') {
             continue;
         }
 
         await crearEquipoAutomatico(postulacion);
+        await cerrarAviso(postulacion.aviso_id);
+    }
+};
 
-        const { error: errorAviso } = await supabase
-            .from('avisos')
-            .update({ estado: 'cerrado' })
-            .eq('id', postulacion.aviso_id);
+// =====================================================
+// 9. RECUPERAR PARTIDOS DE POSTULACIONES ACEPTADAS
+// =====================================================
 
-        if (errorAviso) throw errorAviso;
+const sincronizarPartidosAceptados = async () => {
+
+    const { data: postulaciones, error } = await supabase
+        .from('postulaciones')
+        .select(`
+            id,
+            aviso_id,
+            usuario_id,
+            equipo_id,
+            estado,
+            avisos!inner (
+                id,
+                tipo,
+                autor_id,
+                equipo_id,
+                estado,
+                fecha,
+                hora
+            )
+        `)
+        .eq('estado', 'aceptada');
+
+    if (error) throw error;
+
+    for (const postulacion of postulaciones) {
+
+        const aviso = Array.isArray(postulacion.avisos)
+            ? postulacion.avisos[0]
+            : postulacion.avisos;
+
+        if (aviso.tipo !== 'equipo') continue;
+
+        await crearPartidoAutomatico(postulacion);
+        await cerrarAviso(aviso.id);
     }
 };
 
@@ -346,5 +466,6 @@ module.exports = {
     responderPostulacion,
     obtenerPostulacionesUsuario,
     obtenerPostulacionesRecibidas,
-    sincronizarEquiposAceptados
+    sincronizarEquiposAceptados,
+    sincronizarPartidosAceptados
 };
