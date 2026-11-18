@@ -12,9 +12,7 @@ const crearPostulacion = async (postulacion) => {
         .eq('id', postulacion.avisoId)
         .single();
 
-    if (errorAviso) {
-        throw errorAviso;
-    }
+    if (errorAviso) throw errorAviso;
 
     if (aviso.estado !== 'abierto') {
         throw new Error('El aviso no está abierto');
@@ -24,18 +22,16 @@ const crearPostulacion = async (postulacion) => {
         throw new Error('No podés postularte a tu propio aviso');
     }
 
-    const { data: postulacionExistente, error: errorExistente } = await supabase
+    const { data: existente, error: errorExistente } = await supabase
         .from('postulaciones')
-        .select('id, estado')
+        .select('id')
         .eq('aviso_id', postulacion.avisoId)
         .eq('usuario_id', postulacion.usuarioId)
         .maybeSingle();
 
-    if (errorExistente) {
-        throw errorExistente;
-    }
+    if (errorExistente) throw errorExistente;
 
-    if (postulacionExistente) {
+    if (existente) {
         throw new Error('Ya existe una postulación para este aviso');
     }
 
@@ -50,9 +46,7 @@ const crearPostulacion = async (postulacion) => {
         .select()
         .single();
 
-    if (error) {
-        throw error;
-    }
+    if (error) throw error;
 
     const { data: perfil, error: errorPerfil } = await supabase
         .from('perfiles')
@@ -60,9 +54,7 @@ const crearPostulacion = async (postulacion) => {
         .eq('id', postulacion.usuarioId)
         .single();
 
-    if (errorPerfil) {
-        throw errorPerfil;
-    }
+    if (errorPerfil) throw errorPerfil;
 
     const { error: errorNotificacion } = await supabase
         .from('notificaciones')
@@ -76,15 +68,111 @@ const crearPostulacion = async (postulacion) => {
             postulacion_id: data.id
         });
 
-    if (errorNotificacion) {
-        throw errorNotificacion;
-    }
+    if (errorNotificacion) throw errorNotificacion;
 
     return data;
 };
 
 // =====================================================
-// 2. RESPONDER POSTULACIÓN
+// 2. CREAR EQUIPO AUTOMÁTICAMENTE
+// =====================================================
+
+const crearEquipoAutomatico = async (postulacion) => {
+
+    const autorId = postulacion.avisos.autor_id;
+    const jugadorId = postulacion.usuario_id;
+
+    // Obtener los nombres de ambos jugadores.
+
+    const { data: perfiles, error: errorPerfiles } = await supabase
+        .from('perfiles')
+        .select('id, nombre')
+        .in('id', [autorId, jugadorId]);
+
+    if (errorPerfiles) throw errorPerfiles;
+
+    const perfilAutor = perfiles.find(p => p.id === autorId);
+    const perfilJugador = perfiles.find(p => p.id === jugadorId);
+
+    if (!perfilAutor || !perfilJugador) {
+        throw new Error('No se encontraron los perfiles de ambos jugadores');
+    }
+
+    // Comprobar si alguno ya pertenece a un equipo.
+
+    const { data: membresias, error: errorMembresias } = await supabase
+        .from('miembros_equipo')
+        .select('equipo_id, usuario_id')
+        .in('usuario_id', [autorId, jugadorId])
+        .is('hasta', null);
+
+    if (errorMembresias) throw errorMembresias;
+
+    const equipoAutor = membresias.find(m => m.usuario_id === autorId);
+    const equipoJugador = membresias.find(m => m.usuario_id === jugadorId);
+
+    // Si ambos ya están en el mismo equipo, no duplicarlo.
+
+    if (equipoAutor && equipoJugador) {
+
+        if (equipoAutor.equipo_id === equipoJugador.equipo_id) {
+            return equipoAutor.equipo_id;
+        }
+
+        throw new Error('Los jugadores ya pertenecen a equipos diferentes');
+    }
+
+    if (equipoAutor || equipoJugador) {
+        throw new Error('Uno de los jugadores ya pertenece a otro equipo');
+    }
+
+    // Crear el equipo.
+
+    const nombreEquipo = `${perfilJugador.nombre} - ${perfilAutor.nombre}`;
+
+    const { data: equipo, error: errorEquipo } = await supabase
+        .from('equipos')
+        .insert({
+            nombre: nombreEquipo,
+            creador_id: autorId
+        })
+        .select()
+        .single();
+
+    if (errorEquipo) throw errorEquipo;
+
+    // Agregar a los dos jugadores.
+
+    const { error: errorAgregar } = await supabase
+        .from('miembros_equipo')
+        .insert([
+            {
+                equipo_id: equipo.id,
+                usuario_id: autorId,
+                rol: 'capitan'
+            },
+            {
+                equipo_id: equipo.id,
+                usuario_id: jugadorId,
+                rol: 'integrante'
+            }
+        ]);
+
+    if (errorAgregar) {
+
+        await supabase
+            .from('equipos')
+            .delete()
+            .eq('id', equipo.id);
+
+        throw errorAgregar;
+    }
+
+    return equipo.id;
+};
+
+// =====================================================
+// 3. RESPONDER POSTULACIÓN
 // =====================================================
 
 const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
@@ -106,40 +194,66 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         .eq('id', postulacionId)
         .single();
 
-    if (errorPostulacion) {
-        throw errorPostulacion;
-    }
+    if (errorPostulacion) throw errorPostulacion;
 
     if (postulacion.avisos.autor_id !== usuarioId) {
         throw new Error('Solo el autor del aviso puede responder la postulación');
-    }
-
-    if (postulacion.estado !== 'pendiente') {
-        throw new Error('La postulación ya fue respondida');
     }
 
     if (!['aceptada', 'rechazada'].includes(respuesta)) {
         throw new Error('La respuesta debe ser aceptada o rechazada');
     }
 
-    const { data, error } = await supabase
-        .from('postulaciones')
-        .update({
-            estado: respuesta
-        })
-        .eq('id', postulacionId)
-        .select()
-        .single();
+    // Permitir procesar nuevamente una postulación ya aceptada.
+    // Esto sirve para recuperar la coincidencia de Sebastián y Lucas.
 
-    if (error) {
-        throw error;
+    if (postulacion.estado !== 'pendiente' && postulacion.estado !== respuesta) {
+        throw new Error('La postulación ya fue respondida');
     }
 
-    return data;
+    let postulacionActualizada = postulacion;
+
+    if (postulacion.estado === 'pendiente') {
+
+        const { data, error } = await supabase
+            .from('postulaciones')
+            .update({
+                estado: respuesta
+            })
+            .eq('id', postulacionId)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        postulacionActualizada = data;
+    }
+
+    if (respuesta === 'aceptada') {
+
+        // Si postuló con un equipo, no crear otro equipo.
+        if (!postulacion.equipo_id) {
+
+            await crearEquipoAutomatico(postulacion);
+
+            // Cerrar el aviso para que no reciba más postulaciones.
+
+            const { error: errorAviso } = await supabase
+                .from('avisos')
+                .update({
+                    estado: 'cerrado'
+                })
+                .eq('id', postulacion.aviso_id);
+
+            if (errorAviso) throw errorAviso;
+        }
+    }
+
+    return postulacionActualizada;
 };
 
 // =====================================================
-// 3. OBTENER POSTULACIONES DE UN USUARIO
+// 4. OBTENER POSTULACIONES DE UN USUARIO
 // =====================================================
 
 const obtenerPostulacionesUsuario = async (usuarioId) => {
@@ -163,15 +277,13 @@ const obtenerPostulacionesUsuario = async (usuarioId) => {
         `)
         .eq('usuario_id', usuarioId);
 
-    if (error) {
-        throw error;
-    }
+    if (error) throw error;
 
     return data;
 };
 
 // =====================================================
-// 4. OBTENER POSTULACIONES RECIBIDAS
+// 5. OBTENER POSTULACIONES RECIBIDAS
 // =====================================================
 
 const obtenerPostulacionesRecibidas = async (usuarioId) => {
@@ -203,9 +315,7 @@ const obtenerPostulacionesRecibidas = async (usuarioId) => {
         .eq('avisos.autor_id', usuarioId)
         .order('creado_en', { ascending: false });
 
-    if (error) {
-        throw error;
-    }
+    if (error) throw error;
 
     return data;
 };
