@@ -1,4 +1,3 @@
-
 const express = require('express');
 
 const router = express.Router();
@@ -13,5 +12,8 @@ router.post('/responder', postulacionesController.responderPostulacion);
 
 // Obtener postulaciones de un usuario
 router.get('/usuario/:usuarioId', postulacionesController.obtenerPostulacionesUsuario);
+
+// Obtener postulaciones recibidas por el autor de un aviso
+router.get('/recibidas/:usuarioId', postulacionesController.obtenerPostulacionesRecibidas);
 
 module.exports = router;
