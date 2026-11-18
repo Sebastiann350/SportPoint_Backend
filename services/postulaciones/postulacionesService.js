@@ -1,3 +1,4 @@
+
 const supabase = require('../../database/supabase');
 
 // =====================================================
@@ -82,8 +83,6 @@ const crearEquipoAutomatico = async (postulacion) => {
     const autorId = postulacion.avisos.autor_id;
     const jugadorId = postulacion.usuario_id;
 
-    // Obtener los nombres de ambos jugadores.
-
     const { data: perfiles, error: errorPerfiles } = await supabase
         .from('perfiles')
         .select('id, nombre')
@@ -98,8 +97,6 @@ const crearEquipoAutomatico = async (postulacion) => {
         throw new Error('No se encontraron los perfiles de ambos jugadores');
     }
 
-    // Comprobar si alguno ya pertenece a un equipo.
-
     const { data: membresias, error: errorMembresias } = await supabase
         .from('miembros_equipo')
         .select('equipo_id, usuario_id')
@@ -111,10 +108,7 @@ const crearEquipoAutomatico = async (postulacion) => {
     const equipoAutor = membresias.find(m => m.usuario_id === autorId);
     const equipoJugador = membresias.find(m => m.usuario_id === jugadorId);
 
-    // Si ambos ya están en el mismo equipo, no duplicarlo.
-
     if (equipoAutor && equipoJugador) {
-
         if (equipoAutor.equipo_id === equipoJugador.equipo_id) {
             return equipoAutor.equipo_id;
         }
@@ -125,8 +119,6 @@ const crearEquipoAutomatico = async (postulacion) => {
     if (equipoAutor || equipoJugador) {
         throw new Error('Uno de los jugadores ya pertenece a otro equipo');
     }
-
-    // Crear el equipo.
 
     const nombreEquipo = `${perfilJugador.nombre} - ${perfilAutor.nombre}`;
 
@@ -140,8 +132,6 @@ const crearEquipoAutomatico = async (postulacion) => {
         .single();
 
     if (errorEquipo) throw errorEquipo;
-
-    // Agregar a los dos jugadores.
 
     const { error: errorAgregar } = await supabase
         .from('miembros_equipo')
@@ -159,7 +149,6 @@ const crearEquipoAutomatico = async (postulacion) => {
         ]);
 
     if (errorAgregar) {
-
         await supabase
             .from('equipos')
             .delete()
@@ -204,9 +193,6 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         throw new Error('La respuesta debe ser aceptada o rechazada');
     }
 
-    // Permitir procesar nuevamente una postulación ya aceptada.
-    // Esto sirve para recuperar la coincidencia de Sebastián y Lucas.
-
     if (postulacion.estado !== 'pendiente' && postulacion.estado !== respuesta) {
         throw new Error('La postulación ya fue respondida');
     }
@@ -217,9 +203,7 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
 
         const { data, error } = await supabase
             .from('postulaciones')
-            .update({
-                estado: respuesta
-            })
+            .update({ estado: respuesta })
             .eq('id', postulacionId)
             .select()
             .single();
@@ -229,24 +213,16 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         postulacionActualizada = data;
     }
 
-    if (respuesta === 'aceptada') {
+    if (respuesta === 'aceptada' && !postulacion.equipo_id) {
 
-        // Si postuló con un equipo, no crear otro equipo.
-        if (!postulacion.equipo_id) {
+        await crearEquipoAutomatico(postulacion);
 
-            await crearEquipoAutomatico(postulacion);
+        const { error: errorAviso } = await supabase
+            .from('avisos')
+            .update({ estado: 'cerrado' })
+            .eq('id', postulacion.aviso_id);
 
-            // Cerrar el aviso para que no reciba más postulaciones.
-
-            const { error: errorAviso } = await supabase
-                .from('avisos')
-                .update({
-                    estado: 'cerrado'
-                })
-                .eq('id', postulacion.aviso_id);
-
-            if (errorAviso) throw errorAviso;
-        }
+        if (errorAviso) throw errorAviso;
     }
 
     return postulacionActualizada;
@@ -320,9 +296,55 @@ const obtenerPostulacionesRecibidas = async (usuarioId) => {
     return data;
 };
 
+// =====================================================
+// 6. RECUPERAR EQUIPOS DE POSTULACIONES ACEPTADAS
+// =====================================================
+
+const sincronizarEquiposAceptados = async (usuarioId) => {
+
+    const { data: postulaciones, error } = await supabase
+        .from('postulaciones')
+        .select(`
+            id,
+            aviso_id,
+            usuario_id,
+            equipo_id,
+            estado,
+            avisos!inner (
+                id,
+                autor_id,
+                estado
+            )
+        `)
+        .eq('estado', 'aceptada');
+
+    if (error) throw error;
+
+    for (const postulacion of postulaciones) {
+
+        const esParticipante =
+            postulacion.usuario_id === usuarioId ||
+            postulacion.avisos.autor_id === usuarioId;
+
+        if (!esParticipante || postulacion.equipo_id) {
+            continue;
+        }
+
+        await crearEquipoAutomatico(postulacion);
+
+        const { error: errorAviso } = await supabase
+            .from('avisos')
+            .update({ estado: 'cerrado' })
+            .eq('id', postulacion.aviso_id);
+
+        if (errorAviso) throw errorAviso;
+    }
+};
+
 module.exports = {
     crearPostulacion,
     responderPostulacion,
     obtenerPostulacionesUsuario,
-    obtenerPostulacionesRecibidas
+    obtenerPostulacionesRecibidas,
+    sincronizarEquiposAceptados
 };

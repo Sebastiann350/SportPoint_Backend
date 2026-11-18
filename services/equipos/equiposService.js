@@ -1,5 +1,12 @@
 
 const supabase = require('../../database/supabase');
+const {
+    sincronizarEquiposAceptados
+} = require('../postulaciones/postulacionesService');
+
+// =====================================================
+// 1. CREAR EQUIPO
+// =====================================================
 
 const crearEquipo = async (nombre, usuarioId) => {
 
@@ -12,9 +19,7 @@ const crearEquipo = async (nombre, usuarioId) => {
         .select()
         .single();
 
-    if (errorEquipo) {
-        throw errorEquipo;
-    }
+    if (errorEquipo) throw errorEquipo;
 
     const { data: miembro, error: errorMiembro } = await supabase
         .from('miembros_equipo')
@@ -41,17 +46,23 @@ const crearEquipo = async (nombre, usuarioId) => {
     };
 };
 
+// =====================================================
+// 2. OBTENER MI EQUIPO
+// =====================================================
+
 const obtenerMiEquipo = async (usuarioId) => {
 
+    // Recuperar primero los equipos de postulaciones aceptadas.
+    await sincronizarEquiposAceptados(usuarioId);
+
+    // Buscar el equipo al que pertenece el usuario.
     const { data: membresias, error: errorMembresia } = await supabase
         .from('miembros_equipo')
         .select('equipo_id')
         .eq('usuario_id', usuarioId)
         .is('hasta', null);
 
-    if (errorMembresia) {
-        throw errorMembresia;
-    }
+    if (errorMembresia) throw errorMembresia;
 
     if (!membresias || membresias.length === 0) {
         return null;
@@ -88,51 +99,53 @@ const obtenerMiEquipo = async (usuarioId) => {
         .eq('id', membresias[0].equipo_id)
         .maybeSingle();
 
-    if (errorEquipo) {
-        throw errorEquipo;
-    }
+    if (errorEquipo) throw errorEquipo;
 
-    if (!equipo) {
-        return null;
-    }
+    if (!equipo) return null;
 
     return equipo;
 };
 
-const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) => {
+// =====================================================
+// 3. GESTIONAR INTEGRANTES
+// =====================================================
 
-    // Verificar que el equipo exista y que el usuario sea su creador.
+const gestionarIntegrante = async (
+    equipoId,
+    usuarioId,
+    integranteId,
+    accion
+) => {
+
     const { data: equipo, error: errorEquipo } = await supabase
         .from('equipos')
         .select('id, creador_id')
         .eq('id', equipoId)
         .single();
 
-    if (errorEquipo) {
-        throw errorEquipo;
-    }
+    if (errorEquipo) throw errorEquipo;
 
     if (equipo.creador_id !== usuarioId) {
-        throw new Error('Solo el capitan del equipo puede gestionar integrantes');
+        throw new Error(
+            'Solo el capitan del equipo puede gestionar integrantes'
+        );
     }
 
     if (integranteId === usuarioId) {
         throw new Error('No podes gestionar tu propia membresia');
     }
 
-    // Agregar un integrante.
     if (accion === 'agregar') {
 
-        const { data: membresiaExistente, error: errorMembresia } = await supabase
-            .from('miembros_equipo')
-            .select('id, hasta')
-            .eq('equipo_id', equipoId)
-            .eq('usuario_id', integranteId)
-            .maybeSingle();
+        const { data: membresiaExistente, error: errorMembresia } =
+            await supabase
+                .from('miembros_equipo')
+                .select('id, hasta')
+                .eq('equipo_id', equipoId)
+                .eq('usuario_id', integranteId)
+                .maybeSingle();
 
-        if (errorMembresia) {
-            throw errorMembresia;
-        }
+        if (errorMembresia) throw errorMembresia;
 
         if (membresiaExistente && membresiaExistente.hasta === null) {
             throw new Error('El jugador ya pertenece a este equipo');
@@ -144,9 +157,7 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
             .eq('equipo_id', equipoId)
             .is('hasta', null);
 
-        if (errorCantidad) {
-            throw errorCantidad;
-        }
+        if (errorCantidad) throw errorCantidad;
 
         if (count >= 2) {
             throw new Error('El equipo ya tiene sus dos integrantes');
@@ -156,6 +167,7 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
         let errorOperacion;
 
         if (membresiaExistente) {
+
             const resultado = await supabase
                 .from('miembros_equipo')
                 .update({
@@ -171,6 +183,7 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
             errorOperacion = resultado.error;
 
         } else {
+
             const resultado = await supabase
                 .from('miembros_equipo')
                 .insert({
@@ -185,14 +198,11 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
             errorOperacion = resultado.error;
         }
 
-        if (errorOperacion) {
-            throw errorOperacion;
-        }
+        if (errorOperacion) throw errorOperacion;
 
         return miembro;
     }
 
-    // Quitar un integrante.
     if (accion === 'quitar') {
 
         const { data: miembro, error: errorMiembro } = await supabase
@@ -203,26 +213,23 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
             .is('hasta', null)
             .maybeSingle();
 
-        if (errorMiembro) {
-            throw errorMiembro;
-        }
+        if (errorMiembro) throw errorMiembro;
 
         if (!miembro) {
             throw new Error('El jugador no pertenece a este equipo');
         }
 
-        const { data: miembroActualizado, error: errorActualizar } = await supabase
-            .from('miembros_equipo')
-            .update({
-                hasta: new Date().toISOString().slice(0, 10)
-            })
-            .eq('id', miembro.id)
-            .select()
-            .single();
+        const { data: miembroActualizado, error: errorActualizar } =
+            await supabase
+                .from('miembros_equipo')
+                .update({
+                    hasta: new Date().toISOString().slice(0, 10)
+                })
+                .eq('id', miembro.id)
+                .select()
+                .single();
 
-        if (errorActualizar) {
-            throw errorActualizar;
-        }
+        if (errorActualizar) throw errorActualizar;
 
         return miembroActualizado;
     }
@@ -230,4 +237,8 @@ const gestionarIntegrante = async (equipoId, usuarioId, integranteId, accion) =>
     throw new Error('Accion no valida. Utiliza agregar o quitar');
 };
 
-module.exports = {crearEquipo, obtenerMiEquipo, gestionarIntegrante};
+module.exports = {
+    crearEquipo,
+    obtenerMiEquipo,
+    gestionarIntegrante
+};
