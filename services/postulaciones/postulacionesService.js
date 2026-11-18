@@ -7,10 +7,10 @@ const supabase = require('../../database/supabase');
 
 const crearPostulacion = async (postulacion) => {
 
-    // Verificar que el aviso exista y esté abierto.
+    // Buscar el aviso y su autor.
     const { data: aviso, error: errorAviso } = await supabase
         .from('avisos')
-        .select('id, tipo, estado')
+        .select('id, tipo, estado, autor_id')
         .eq('id', postulacion.avisoId)
         .single();
 
@@ -22,7 +22,12 @@ const crearPostulacion = async (postulacion) => {
         throw new Error('El aviso no está abierto');
     }
 
-    // Verificar que no exista ya una postulación del mismo usuario.
+    // Evitar que el autor se postule a su propio aviso.
+    if (aviso.autor_id === postulacion.usuarioId) {
+        throw new Error('No podés postularte a tu propio aviso');
+    }
+
+    // Verificar que no exista otra postulación del mismo usuario.
     const { data: postulacionExistente, error: errorExistente } = await supabase
         .from('postulaciones')
         .select('id, estado')
@@ -38,6 +43,7 @@ const crearPostulacion = async (postulacion) => {
         throw new Error('Ya existe una postulación para este aviso');
     }
 
+    // Registrar la postulación.
     const { data, error } = await supabase
         .from('postulaciones')
         .insert({
@@ -51,6 +57,34 @@ const crearPostulacion = async (postulacion) => {
 
     if (error) {
         throw error;
+    }
+
+    // Buscar el nombre del jugador que se postuló.
+    const { data: perfil, error: errorPerfil } = await supabase
+        .from('perfiles')
+        .select('nombre')
+        .eq('id', postulacion.usuarioId)
+        .single();
+
+    if (errorPerfil) {
+        throw errorPerfil;
+    }
+
+    // Crear una notificación para el autor del aviso.
+    const { error: errorNotificacion } = await supabase
+        .from('notificaciones')
+        .insert({
+            usuario_id: aviso.autor_id,
+            actor_id: postulacion.usuarioId,
+            tipo: 'nueva_postulacion',
+            titulo: 'Nueva postulación',
+            mensaje: `${perfil.nombre} se postuló a tu aviso.`,
+            aviso_id: aviso.id,
+            postulacion_id: data.id
+        });
+
+    if (errorNotificacion) {
+        throw errorNotificacion;
     }
 
     return data;
@@ -84,7 +118,7 @@ const responderPostulacion = async (postulacionId, usuarioId, respuesta) => {
         throw errorPostulacion;
     }
 
-    // Solo el autor del aviso puede responder la postulación.
+    // Solo el autor del aviso puede responder.
     if (postulacion.avisos.autor_id !== usuarioId) {
         throw new Error('Solo el autor del aviso puede responder la postulación');
     }
